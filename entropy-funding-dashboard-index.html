@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Entropy / Arcus / Lighter Funding 比較</title>
+<style>
+  :root {
+    --bg: #0f0f12;
+    --card: #1a1a21;
+    --text: #e8e8ed;
+    --muted: #9a9aa8;
+    --green: #22c55e;
+    --red: #ef4444;
+    --yellow: #eab308;
+    --accent: #6366f1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+  }
+  .container { max-width: 1200px; margin: 0 auto; padding: 16px; }
+  header { text-align: center; margin-bottom: 20px; }
+  h1 { margin: 0 0 8px; font-size: 1.5rem; }
+  .subtitle { color: var(--muted); font-size: 0.9rem; }
+  .card {
+    background: var(--card);
+    border-radius: 12px;
+    padding: 14px;
+    margin-bottom: 14px;
+    border: 1px solid #2a2a33;
+  }
+  .controls {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  button {
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 8px 14px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 500;
+  }
+  button:disabled { opacity: 0.6; cursor: not-allowed; }
+  input[type="number"] {
+    background: #121218;
+    border: 1px solid #333;
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 8px;
+    width: 70px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+  }
+  th, td { padding: 8px 6px; text-align: left; white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; border-bottom: 1px solid #2a2a33; }
+  tr:hover { background: #22222a; }
+  .apr-high { color: var(--green); font-weight: 600; }
+  .apr-mid { color: var(--yellow); }
+  .apr-low { color: var(--muted); }
+  .status { font-size: 0.8rem; color: var(--muted); margin-top: 6px; }
+  .explain h3 { margin-top: 0; font-size: 1rem; }
+  .explain ul { padding-left: 18px; font-size: 0.9rem; }
+  .warn { background: #3a2a1a; border-left: 4px solid var(--yellow); padding: 10px; border-radius: 8px; font-size: 0.85rem; }
+  footer { text-align: center; color: var(--muted); font-size: 0.75rem; margin-top: 24px; }
+  .best { background: rgba(34,197,94,0.08); }
+  .scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>Entropy / Arcus / Lighter Funding 比較</h1>
+    <p class="subtitle">同一個標的在三個平台的資金費率年化 · 方便判斷哪邊適合開 Short 收 Funding</p>
+  </header>
+
+  <div class="card">
+    <div class="controls">
+      <button id="refreshBtn">重新整理</button>
+      <label>門檻 APR % <input type="number" id="threshold" value="20" min="0" step="5"></label>
+      <label>本金 $ <input type="number" id="notional" value="10000" min="100" step="1000"></label>
+      <label><input type="checkbox" id="autoRefresh" checked> 每小時整點自動更新</label>
+    </div>
+    <div id="status" class="status">準備載入...</div>
+    <div class="scroll">
+      <table id="table">
+        <thead>
+          <tr>
+            <th>市場</th>
+            <th>Entropy</th>
+            <th>Arcus</th>
+            <th>Lighter</th>
+            <th>利差 (高-低)</th>
+            <th>預估日收益</th>
+            <th>建議方向</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card explain">
+    <h3>怎麼看這個表？</h3>
+    <ul>
+      <li><strong>正數</strong>：Long 付錢給 Short → 適合在那個平台開 <strong>Short</strong> 收 Funding。</li>
+      <li><strong>負數</strong>：Short 付錢給 Long → 適合開 <strong>Long</strong>。</li>
+      <li>做中性通常是：在 APR 最高的地方 Short，在 APR 較低的地方 Long 同樣標的。</li>
+    </ul>
+    <div class="warn">
+      <strong>注意：</strong>Funding 每小時變動。三個平台的深度、滑點、手續費都不同。高數字常常是暫時的。Ondo 因為 API 不支援瀏覽器直接呼叫，所以沒有放進去。
+    </div>
+  </div>
+
+  <footer>
+    資料來源：Hyperliquid (Entropy) + Arcus + Lighter 公開 API · 僅供參考，不是投資建議
+  </footer>
+</div>
+
+<script>
+const HL_API = "https://api.hyperliquid.xyz/info";
+const ARCUS_API = "https://api.arcus.xyz/v1/markets";
+const LIGHTER_API = "https://mainnet.zklighter.elliot.ai/api/v1/funding-rates";
+const tbody = document.querySelector("#table tbody");
+const statusEl = document.getElementById("status");
+const refreshBtn = document.getElementById("refreshBtn");
+const thresholdInput = document.getElementById("threshold");
+const notionalInput = document.getElementById("notional");
+const autoRefresh = document.getElementById("autoRefresh");
+let timer = null;
+
+function aprFromHourly(h) {
+  if (h == null || isNaN(h)) return null;
+  return h * 24 * 365 * 100;
+}
+
+// Lighter rate is per 8 hours
+function aprFrom8h(r) {
+  if (r == null || isNaN(r)) return null;
+  return r * (365 * 24 / 8) * 100;
+}
+
+function formatApr(apr) {
+  if (apr == null) return "—";
+  const sign = apr > 0 ? "+" : "";
+  return sign + apr.toFixed(1) + "%";
+}
+
+function aprClass(apr, threshold) {
+  if (apr == null) return "";
+  if (Math.abs(apr) >= threshold) return "apr-high";
+  if (Math.abs(apr) >= threshold / 2) return "apr-mid";
+  return "apr-low";
+}
+
+function normalizeName(name) {
+  return (name || "").toUpperCase()
+    .replace(/^IO:/, "")
+    .replace(/-USD$/, "")
+    .replace(/-USDC$/, "")
+    .replace(/USDT$/, "")
+    .trim();
+}
+
+async function loadData() {
+  refreshBtn.disabled = true;
+  statusEl.textContent = "載入中...";
+  try {
+    const [hlRes, arcusRes, lighterRes] = await Promise.all([
+      fetch(HL_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "metaAndAssetCtxs", dex: "io" })
+      }),
+      fetch(ARCUS_API),
+      fetch(LIGHTER_API)
+    ]);
+
+    if (!hlRes.ok) throw new Error("Entropy HTTP " + hlRes.status);
+    if (!arcusRes.ok) throw new Error("Arcus HTTP " + arcusRes.status);
+    if (!lighterRes.ok) throw new Error("Lighter HTTP " + lighterRes.status);
+
+    const hlData = await hlRes.json();
+    const arcusData = await arcusRes.json();
+    const lighterData = await lighterRes.json();
+
+    if (!Array.isArray(hlData) || hlData.length < 2) throw new Error("Entropy 格式錯誤");
+
+    const universe = hlData[0].universe || [];
+    const ctxs = hlData[1];
+    const arcusMarkets = arcusData.markets || [];
+    const lighterRates = (lighterData.funding_rates || []).filter(r => r.exchange === "lighter");
+
+    const arcusMap = {};
+    for (const m of arcusMarkets) {
+      const key = normalizeName(m.marketDisplayName || m.baseAsset);
+      if (key) arcusMap[key] = m;
+    }
+
+    const lighterMap = {};
+    for (const r of lighterRates) {
+      const key = normalizeName(r.symbol);
+      if (key) lighterMap[key] = r.rate;
+    }
+
+    const threshold = parseFloat(thresholdInput.value) || 20;
+    const notional = parseFloat(notionalInput.value) || 10000;
+    const rows = [];
+
+    for (let i = 0; i < universe.length; i++) {
+      const rawName = (universe[i].name || "").replace(/^io:/, "");
+      const key = normalizeName(rawName);
+      const ctx = ctxs[i] || {};
+      const funding = ctx.funding != null ? parseFloat(ctx.funding) : null;
+      const entropyApr = aprFromHourly(funding);
+
+      const arcus = arcusMap[key];
+      let arcusApr = null;
+      if (arcus && arcus.fundingRate != null) {
+        arcusApr = aprFromHourly(parseFloat(arcus.fundingRate));
+      }
+
+      const lighterRate = lighterMap[key];
+      const lighterApr = lighterRate != null ? aprFrom8h(lighterRate) : null;
+
+      const aprs = [entropyApr, arcusApr, lighterApr].filter(a => a != null);
+      let spread = null;
+      let daily = null;
+      if (aprs.length >= 2) {
+        const maxApr = Math.max(...aprs);
+        const minApr = Math.min(...aprs);
+        spread = maxApr - minApr;
+        // Daily earnings from the spread (approximate, assuming neutral position)
+        daily = (spread / 100 / 365) * notional;
+      }
+
+      // Find the highest APR platform
+      const candidates = [
+        { name: "Entropy", apr: entropyApr },
+        { name: "Arcus", apr: arcusApr },
+        { name: "Lighter", apr: lighterApr }
+      ].filter(c => c.apr != null);
+
+      let highest = null;
+      if (candidates.length) {
+        highest = candidates.reduce((a, b) => (a.apr > b.apr ? a : b));
+      }
+
+      let suggestion = "—";
+      if (highest && highest.apr > 5) {
+        suggestion = `${highest.name} 開 Short`;
+      } else if (highest && highest.apr < -5) {
+        suggestion = `${highest.name} 開 Long`;
+      } else if (candidates.length) {
+        suggestion = "利差小";
+      }
+
+      rows.push({
+        name: rawName,
+        entropyApr,
+        arcusApr,
+        lighterApr,
+        spread,
+        daily,
+        suggestion
+      });
+    }
+
+    // Sort by max absolute APR descending
+    rows.sort((a, b) => {
+      const maxA = Math.max(Math.abs(a.entropyApr||0), Math.abs(a.arcusApr||0), Math.abs(a.lighterApr||0));
+      const maxB = Math.max(Math.abs(b.entropyApr||0), Math.abs(b.arcusApr||0), Math.abs(b.lighterApr||0));
+      return maxB - maxA;
+    });
+
+    tbody.innerHTML = rows.map(r => {
+      const eCls = aprClass(r.entropyApr, threshold);
+      const aCls = aprClass(r.arcusApr, threshold);
+      const lCls = aprClass(r.lighterApr, threshold);
+      const isHot = (r.spread != null && r.spread >= threshold);
+      const spreadStr = r.spread != null ? (r.spread > 0 ? "+" : "") + r.spread.toFixed(1) + "%" : "—";
+      const dailyStr = r.daily != null ? (r.daily >= 0 ? "+" : "") + "$" + r.daily.toFixed(2) : "—";
+      return `<tr class="${isHot ? 'best' : ''}">
+        <td><strong>${r.name}</strong></td>
+        <td class="${eCls}">${formatApr(r.entropyApr)}</td>
+        <td class="${aCls}">${formatApr(r.arcusApr)}</td>
+        <td class="${lCls}">${formatApr(r.lighterApr)}</td>
+        <td>${spreadStr}</td>
+        <td>${dailyStr}</td>
+        <td>${r.suggestion}</td>
+      </tr>`;
+    }).join("");
+
+    const now = new Date().toLocaleString("zh-TW", { hour12: false });
+    statusEl.textContent = `已更新 ${now} · 共 ${rows.length} 檔 Entropy 市場`;
+  } catch (e) {
+    statusEl.textContent = "載入失敗：" + e.message;
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#ef4444">無法取得資料</td></tr>`;
+  } finally {
+    refreshBtn.disabled = false;
+  }
+}
+
+function setupAuto() {
+  if (timer) clearTimeout(timer);
+  if (!autoRefresh.checked) return;
+
+  const now = new Date();
+  const nextHour = new Date(now);
+  nextHour.setHours(now.getHours() + 1, 0, 0, 0);
+  if (nextHour - now < 5000) nextHour.setHours(nextHour.getHours() + 1);
+  const delay = nextHour - now;
+
+  timer = setTimeout(() => {
+    loadData();
+    timer = setInterval(loadData, 60 * 60 * 1000);
+  }, delay);
+}
+
+refreshBtn.addEventListener("click", loadData);
+thresholdInput.addEventListener("change", loadData);
+notionalInput.addEventListener("change", loadData);
+autoRefresh.addEventListener("change", setupAuto);
+
+loadData();
+setupAuto();
+</script>
+</body>
+</html>
